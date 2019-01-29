@@ -1,7 +1,9 @@
 package spectator
 
 import (
+	"context"
 	"encoding/json"
+	"golang.org/x/sync/semaphore"
 	"io/ioutil"
 	"math"
 	"path/filepath"
@@ -16,22 +18,24 @@ type Meter interface {
 }
 
 type Config struct {
-	Frequency  time.Duration     `json:"frequency"`
-	Timeout    time.Duration     `json:"timeout"`
-	Uri        string            `json:"uri"`
-	BatchSize  int               `json:"batch_size"`
-	CommonTags map[string]string `json:"common_tags"`
+	Frequency        time.Duration     `json:"frequency"`
+	Timeout          time.Duration     `json:"timeout"`
+	Uri              string            `json:"uri"`
+	BatchSize        int               `json:"batch_size"`
+	BatchConcurrency int64             `json:"batch_concurrency"`
+	CommonTags       map[string]string `json:"common_tags"`
 }
 
 type Registry struct {
-	clock   Clock
-	config  *Config
-	meters  map[string]Meter
-	started bool
-	log     Logger
-	mutex   *sync.Mutex
-	http    *HttpClient
-	quit    chan struct{}
+	clock          Clock
+	config         *Config
+	meters         map[string]Meter
+	started        bool
+	log            Logger
+	mutex          *sync.Mutex
+	batchSemaphore *semaphore.Weighted
+	http           *HttpClient
+	quit           chan struct{}
 }
 
 func NewRegistryConfiguredBy(filePath string) (*Registry, error) {
@@ -55,7 +59,7 @@ func NewRegistryConfiguredBy(filePath string) (*Registry, error) {
 
 func NewRegistry(config *Config) *Registry {
 	r := &Registry{&SystemClock{}, config, map[string]Meter{}, false,
-		defaultLogger(), &sync.Mutex{}, nil, make(chan struct{})}
+		defaultLogger(), &sync.Mutex{}, semaphore.NewWeighted(config.BatchConcurrency), nil, make(chan struct{})}
 	r.http = NewHttpClient(r, r.config.Timeout)
 	return r
 }
@@ -138,7 +142,7 @@ func (r *Registry) getMeasurements() []Measurement {
 	return measurements
 }
 
-func (r* Registry) sendBatch(measurements []Measurement) {
+func (r *Registry) sendBatch(measurements []Measurement) {
 	r.log.Debugf("Sending %d measurements to %s", len(measurements), r.config.Uri)
 	jsonBytes, err := r.measurementsToJson(measurements)
 	if err != nil {
@@ -164,7 +168,16 @@ func (r *Registry) publish() {
 		if end > len(measurements) {
 			end = len(measurements)
 		}
-		r.sendBatch(measurements[i:end])
+		err := r.batchSemaphore.Acquire(context.Background(), 1)
+		if err != nil {
+			r.log.Errorf("Unable to acquire semaphore: %v.", err)
+			return
+		}
+		go func() {
+			defer r.batchSemaphore.Release(1)
+			r.sendBatch(measurements[i:end])
+		}()
+
 	}
 }
 
