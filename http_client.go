@@ -16,11 +16,11 @@ import (
 
 type HttpClient struct {
 	registry *Registry
-	timeout  time.Duration
+	client   http.Client
 }
 
 func NewHttpClient(registry *Registry, timeout time.Duration) *HttpClient {
-	return &HttpClient{registry, timeout}
+	return &HttpClient{registry, http.Client{Timeout: timeout}}
 }
 
 func userFriendlyErr(errStr string) string {
@@ -70,8 +70,6 @@ func (h *HttpClient) PostJson(uri string, jsonBytes []byte) (statusCode int, err
 	if err != nil {
 		panic(err)
 	}
-	client := http.Client{}
-	client.Timeout = h.timeout
 
 	tags := map[string]string{
 		"client": "spectator-go",
@@ -82,7 +80,7 @@ func (h *HttpClient) PostJson(uri string, jsonBytes []byte) (statusCode int, err
 	clock := h.registry.clock
 	start := clock.Now()
 	log.Debugf("posting data to %s, payload %d bytes", uri, len(jsonBytes))
-	resp, err := client.Do(req)
+	resp, err := h.client.Do(req)
 	if err != nil {
 		if urlerr, ok := err.(*url.Error); ok {
 			if urlerr.Timeout() {
