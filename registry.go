@@ -173,10 +173,10 @@ func (r *Registry) publish() {
 			r.log.Errorf("Unable to acquire semaphore: %v.", err)
 			return
 		}
-		go func() {
+		go func(m []Measurement) {
 			defer r.batchSemaphore.Release(1)
-			r.sendBatch(measurements[i:end])
-		}()
+			r.sendBatch(m)
+		}(measurements[i:end])
 
 	}
 }
